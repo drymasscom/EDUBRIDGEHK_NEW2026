@@ -81,7 +81,7 @@ const providerConfig: ProviderConfig = {
   tutor_chat: defaultProvider,
   group_discussion: defaultProvider,
   translation: (process.env.PREFERRED_TRANSLATION_PROVIDER as any) || defaultProvider,
-  ocr_provider: (process.env.PREFERRED_OCR_PROVIDER as "groq" | "gemini") || "groq", // Default to Groq
+  ocr_provider: (process.env.PREFERRED_OCR_PROVIDER as "groq" | "gemini") || "gemini", // Default to Gemini as requested
 };
 
 const providerStats = {
@@ -189,7 +189,7 @@ async function callLMZHAPI(params: {
   };
 }
 
-// Call Groq Vision API (model: qwen/qwen3.6-27b) for ultra-fast OCR & multimodal analysis
+// Call Groq Vision API with model fallback and token budget optimization
 async function callGroqOCR(params: {
   systemPrompt?: string;
   prompt?: string;
@@ -201,12 +201,16 @@ async function callGroqOCR(params: {
     throw new Error("GROQ_API_KEY environment variable is not configured.");
   }
 
-  const model = "qwen/qwen3.6-27b";
+  const groqModels = ["qwen/qwen3.6-27b", "llama-3.2-11b-vision-instruct", "llama-3.2-90b-vision-instruct"];
   const userContentParts: any[] = [];
 
   let textPrompt = params.prompt || "Please OCR this image and analyze its educational content for a Hong Kong DSE secondary student.";
   if (params.systemPrompt) {
     textPrompt = `${params.systemPrompt}\n\nTask Instructions:\n${textPrompt}`;
+  }
+
+  if (params.jsonOutput) {
+    textPrompt += "\n\nIMPORTANT: Respond strictly in valid raw JSON format as a parseable JSON object.";
   }
 
   userContentParts.push({ type: "text", text: textPrompt });
@@ -223,61 +227,74 @@ async function callGroqOCR(params: {
     });
   }
 
-  const reqBody: any = {
-    model,
-    messages: [
-      {
-        role: "user",
-        content: userContentParts.length === 1 && typeof userContentParts[0].text === "string" 
-          ? userContentParts[0].text 
-          : userContentParts,
-      },
-    ],
-    temperature: 0.2,
-    max_completion_tokens: 4096,
-  };
+  let lastGroqError: any = null;
 
-  if (params.jsonOutput) {
-    reqBody.response_format = { type: "json_object" };
-    if (typeof userContentParts[0].text === "string" && !userContentParts[0].text.includes("JSON")) {
-      userContentParts[0].text += "\n\nPlease respond strictly in JSON format as a valid JSON object.";
+  for (const modelCandidate of groqModels) {
+    // Attempt with and without strict json_object format option to handle Groq API schema validation limits
+    const formatModes = params.jsonOutput ? [{ type: "json_object" }, undefined] : [undefined];
+
+    for (const formatMode of formatModes) {
+      try {
+        const reqBody: any = {
+          model: modelCandidate,
+          messages: [
+            {
+              role: "user",
+              content: userContentParts.length === 1 && typeof userContentParts[0].text === "string" 
+                ? userContentParts[0].text 
+                : userContentParts,
+            },
+          ],
+          temperature: 0.2,
+          max_completion_tokens: 1500, // Budget token cap to stay well within TPM quotas
+        };
+
+        if (formatMode) {
+          reqBody.response_format = formatMode;
+        }
+
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 20000); // 20s timeout per candidate
+
+        const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${apiKey}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(reqBody),
+          signal: controller.signal,
+        });
+        clearTimeout(timeoutId);
+
+        if (!response.ok) {
+          const errText = await response.text();
+          throw new Error(`Groq API returned HTTP ${response.status}: ${errText}`);
+        }
+
+        const resJson = await response.json();
+        if (resJson?.error) {
+          throw new Error(`Groq API error: ${resJson.error.message || JSON.stringify(resJson.error)}`);
+        }
+
+        const choice = resJson?.choices?.[0];
+        const content = choice?.message?.content;
+        if (!content) {
+          throw new Error("Invalid response message content from Groq API.");
+        }
+
+        return {
+          content,
+          modelUsed: resJson.model || modelCandidate,
+        };
+      } catch (err: any) {
+        lastGroqError = err;
+        console.warn(`[Groq OCR] Candidate ${modelCandidate} (format: ${formatMode ? 'json_object' : 'raw'}) failed (${err.message.slice(0, 100)}).`);
+      }
     }
   }
 
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 25000); // 25s timeout
-
-  const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(reqBody),
-    signal: controller.signal,
-  });
-  clearTimeout(timeoutId);
-
-  if (!response.ok) {
-    const errText = await response.text();
-    throw new Error(`Groq API returned HTTP ${response.status}: ${errText}`);
-  }
-
-  const resJson = await response.json();
-  if (resJson?.error) {
-    throw new Error(`Groq API error: ${resJson.error.message || JSON.stringify(resJson.error)}`);
-  }
-
-  const choice = resJson?.choices?.[0];
-  const content = choice?.message?.content;
-  if (!content) {
-    throw new Error("Invalid response message content from Groq API.");
-  }
-
-  return {
-    content,
-    modelUsed: resJson.model || model,
-  };
+  throw lastGroqError || new Error("All Groq Vision models failed.");
 }
 
 // Call OpenRouter API with robust structure extraction & high-speed model fallback
@@ -392,8 +409,8 @@ async function safeGenerateContent(ai: GoogleGenAI, params: {
   primaryModel?: string;
   fallbackModels?: string[];
 }) {
-  const primary = params.primaryModel || "gemini-3.6-flash";
-  const fallbacks = params.fallbackModels || ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"];
+  const primary = params.primaryModel || "gemini-2.0-flash";
+  const fallbacks = params.fallbackModels || ["gemini-2.0-flash-lite"];
   const modelsToTry = [primary, ...fallbacks];
 
   let lastError: any = null;
@@ -408,15 +425,13 @@ async function safeGenerateContent(ai: GoogleGenAI, params: {
     } catch (err: any) {
       lastError = err;
       const errMsg = err?.message || String(err);
-      const isQuota = errMsg.includes("429") || errMsg.includes("RESOURCE_EXHAUSTED") || errMsg.includes("Quota exceeded");
-      const shortMessage = isQuota ? "Quota/Rate limit exceeded (429)" : errMsg.slice(0, 120);
-      console.warn(`Model ${model} unavailable (${shortMessage}), attempting next...`);
-      if (isQuota) {
-        throw new Error("Gemini API quota/rate limit exceeded (429)");
+      console.warn(`Model ${model} unavailable (${errMsg.slice(0, 100)}), trying fallback...`);
+      if (errMsg.includes("429") || errMsg.includes("quota")) {
+        await new Promise((resolve) => setTimeout(resolve, 800));
       }
     }
   }
-  throw lastError;
+  throw lastError || new Error("All Gemini models exceeded quota or rate limit.");
 }
 
 // Helper for resilient Gemini chat
@@ -426,8 +441,8 @@ async function safeChatMessage(ai: GoogleGenAI, params: {
   primaryModel?: string;
   fallbackModels?: string[];
 }) {
-  const primary = params.primaryModel || "gemini-3.6-flash";
-  const fallbacks = params.fallbackModels || ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"];
+  const primary = params.primaryModel || "gemini-2.0-flash";
+  const fallbacks = params.fallbackModels || ["gemini-2.0-flash-lite"];
   const modelsToTry = [primary, ...fallbacks];
 
   let lastError: any = null;
@@ -444,15 +459,13 @@ async function safeChatMessage(ai: GoogleGenAI, params: {
     } catch (err: any) {
       lastError = err;
       const errMsg = err?.message || String(err);
-      const isQuota = errMsg.includes("429") || errMsg.includes("RESOURCE_EXHAUSTED") || errMsg.includes("Quota exceeded");
-      const shortMessage = isQuota ? "Quota/Rate limit exceeded (429)" : errMsg.slice(0, 120);
-      console.warn(`Chat model ${model} unavailable (${shortMessage}), attempting next...`);
-      if (isQuota) {
-        throw new Error("Gemini API quota/rate limit exceeded (429)");
+      console.warn(`Chat model ${model} unavailable (${errMsg.slice(0, 100)}), trying fallback...`);
+      if (errMsg.includes("429") || errMsg.includes("quota")) {
+        await new Promise((resolve) => setTimeout(resolve, 800));
       }
     }
   }
-  throw lastError;
+  throw lastError || new Error("All Gemini chat models exceeded quota or rate limit.");
 }
 
 async function runLMZH(params: {
@@ -545,7 +558,9 @@ async function runGemini(params: {
       contents.push({ text: params.prompt });
     }
 
-    const config: any = {};
+    const config: any = {
+      maxOutputTokens: 800,
+    };
     if (params.jsonOutput) {
       config.responseMimeType = "application/json";
     }
@@ -630,7 +645,7 @@ async function callAITextGen(params: {
 }
 
 // Clean and parse JSON helper with fallback substring extraction
-function parseCleanJson(rawText: string): any {
+function parseCleanJson(rawText: string, fallbackField: string = "ocrText"): any {
   if (!rawText) return {};
   let cleaned = rawText.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
   cleaned = cleaned
@@ -657,7 +672,12 @@ function parseCleanJson(rawText: string): any {
         return JSON.parse(cleaned.substring(firstBracket, lastBracket + 1));
       } catch (_) {}
     }
-    throw e;
+    
+    console.warn(`parseCleanJson: Raw text could not be parsed as JSON. Returning structured fallback for field '${fallbackField}'.`);
+    return {
+      [fallbackField]: cleaned,
+      rawText: cleaned,
+    };
   }
 }
 
@@ -1112,7 +1132,7 @@ Return STRICTLY JSON:
 });
 
 // API Endpoint 1: Snap & Learn OCR & Language Analysis
-apiRouter.post("/analyze-snap", async (req, res) => {
+const handleAnalyzeSnap = async (req: express.Request, res: express.Response) => {
   try {
     const { imageBase64, text, targetLanguage = "en" } = req.body;
     
@@ -1120,50 +1140,77 @@ apiRouter.post("/analyze-snap", async (req, res) => {
       return res.status(400).json({ error: "Please provide either an image or text snippet." });
     }
 
-    const systemPrompt = `You are EduBridge HK AI (港適應 AI 升學導師), an elite English & Language Learning AI tailored specifically for new immigrant students in Hong Kong (Mainland to HK secondary students, S1-S6 preparing for HKDSE).
-Your goal is to help students adapt to the Hong Kong educational curriculum, master HKDSE exam English, understand Hong Kong local educational terminology, and build high-level pronunciation and vocabulary skills.
+    const systemPrompt = `You are EduBridge HK AI (港適應 AI 升學導師), an elite English & Language Learning AI tailored for HKDSE students.
+Keep output highly concise (max 2 vocabulary items, max 1 grammar note). Focus on fast processing speed.
 
-CRITICAL LANGUAGE DIRECTIVE FOR OCR & TEXT EXTRACTION:
-- If the scanned image or input text contains Chinese or any other non-English language (e.g. Chinese textbooks, school notices, Chinese notes), extract the content and convert/translate the main text into clean, fluent, natural academic English for "ocrText" and "speechScript". This allows Hong Kong secondary students to learn and practice the English version for DSE English exams.
-- The "translation" field must contain the clear Traditional Chinese (繁體中文) version for reference.
-- Extract high-value DSE English vocabulary from the English text for the "vocabulary" field.
-
-Analyze the provided input (photo screenshot/textbook snippet or text).
-Return your response STRICTLY as a JSON object matching this schema:
+Analyze input and return STRICTLY JSON:
 {
-  "ocrText": "The extracted text in English (if input was in Chinese or non-English, translate/convert it to fluent English here)",
-  "title": "A concise descriptive title for this item in English (e.g. 'DSE Biology: Cell Structure' or 'HK School Notice')",
-  "subjectCategory": "DSE English / DSE Science / HK Social Culture / School Notices / General Vocabulary",
-  "hkdseContext": "A brief explanation in Traditional Chinese (繁體中文) on why this text is important for HKDSE candidates or HK school life",
-  "translation": "Clear, fluent Traditional Chinese (繁體中文) translation with Hong Kong localized phrasing",
-  "cantoneseGuide": "Phonetic / tone tips or Cantonese explanation if relevant for HK school integration",
+  "ocrText": "Extracted text in English (if input was Chinese, convert to fluent academic English)",
+  "title": "Concise descriptive title in English",
+  "subjectCategory": "DSE English / DSE Science / HK Culture / General",
+  "hkdseContext": "Brief explanation in Traditional Chinese (繁體中文) on HKDSE relevance",
+  "translation": "Clear Traditional Chinese (繁體中文) translation",
+  "cantoneseGuide": "Phonetic guide for HK school integration",
   "vocabulary": [
     {
-      "word": "Target English word or idiom",
+      "word": "Target English word",
       "ipa": "/.../",
-      "level": "DSE Level 3 / DSE Level 4 / DSE Level 5 / DSE Level 5**",
-      "meanZh": "Traditional Chinese meaning (繁體)",
-      "meanCn": "Simplified Chinese meaning (简体)",
+      "level": "DSE Level 4 / 5*",
+      "meanZh": "Traditional Chinese meaning",
       "meanEn": "English definition",
-      "exampleSentence": "A high-scoring DSE essay example sentence using this word"
+      "exampleSentence": "High-scoring DSE sentence"
     }
   ],
-  "grammarNotes": [
-    "Key grammar rule, sentence pattern, or academic collocation highlight"
-  ],
-  "speechScript": "Natural, clear native English text formatted for TTS audio reading and slow pronunciation practice",
-  "knowledgeTags": ["#DSE_English", "#Vocab_Mastery", "#HK_Curriculum"],
-  "suggestedQuestions": [
-    "How can I use this vocabulary in a DSE Paper 2 writing essay?",
-    "Can you read this sentence again at 0.8x speed and point out linked sounds?",
-    "What are the common mistakes HK students make with this grammar point?"
-  ]
+  "grammarNotes": ["Key grammar rule"],
+  "speechScript": "Natural native English text formatted for TTS audio reading",
+  "knowledgeTags": ["#DSE_English", "#Vocab"],
+  "suggestedQuestions": ["How to use this in DSE Paper 2?"]
 }`;
 
-    // Check configured OCR Provider (default: Groq)
-    const preferredOcr = providerConfig.ocr_provider || "groq";
+    // Check configured OCR Provider (default: Gemini)
+    const preferredOcr = providerConfig.ocr_provider || "gemini";
 
-    if (preferredOcr === "groq" && process.env.GROQ_API_KEY) {
+    if (preferredOcr === "gemini" && imageBase64) {
+      // Primary: Gemini Multimodal Vision OCR
+      try {
+        const ai = getGeminiClient();
+        const cleanBase64 = imageBase64.replace(/^data:image\/\w+;base64,/, "");
+        const parts: any[] = [
+          { text: systemPrompt },
+          { inlineData: { mimeType: "image/jpeg", data: cleanBase64 } },
+          { text: "Please OCR this image and analyze its educational content for a Hong Kong DSE secondary student. If any non-English text is read, automatically convert/translate it into fluent English for ocrText and speechScript." }
+        ];
+
+        const response = await safeGenerateContent(ai, {
+          contents: parts,
+          config: { responseMimeType: "application/json", maxOutputTokens: 1024 }
+        });
+        const data = parseCleanJson(response.text || "{}");
+        providerStats.geminiCount++;
+        providerStats.lastUsedProvider["ocr_provider"] = "gemini (gemini-3.6-flash)";
+        return res.json({ ...data, _providerUsed: "gemini (gemini-3.6-flash)" });
+      } catch (err: any) {
+        console.warn("Gemini Vision OCR primary failed, attempting Groq fallback:", err.message);
+        if (process.env.GROQ_API_KEY) {
+          try {
+            const groqResult = await callGroqOCR({
+              systemPrompt,
+              prompt: "Please OCR this image screenshot/page and analyze its educational content for a Hong Kong DSE secondary student. If any non-English text is read, automatically convert/translate it into fluent English for ocrText and speechScript.",
+              imageBase64,
+              jsonOutput: true,
+            });
+            const data = parseCleanJson(groqResult.content);
+            providerStats.groqCount++;
+            providerStats.lastUsedProvider["ocr_provider"] = `groq (${groqResult.modelUsed})`;
+            return res.json({ ...data, _providerUsed: `groq (${groqResult.modelUsed})` });
+          } catch (groqErr: any) {
+            providerStats.groqErrors++;
+            console.warn(`[Groq OCR Fallback] Failed (${groqErr.message}).`);
+          }
+        }
+      }
+    } else if (preferredOcr === "groq" && process.env.GROQ_API_KEY) {
+      // Primary: Groq Vision OCR
       try {
         const groqResult = await callGroqOCR({
           systemPrompt,
@@ -1185,7 +1232,7 @@ Return your response STRICTLY as a JSON object matching this schema:
     }
 
     if (imageBase64) {
-      // Vision Multimodal OCR uses Gemini
+      // Secondary / Fallback Gemini Vision Multimodal OCR
       const ai = getGeminiClient();
       const cleanBase64 = imageBase64.replace(/^data:image\/\w+;base64,/, "");
       const parts: any[] = [
@@ -1197,14 +1244,14 @@ Return your response STRICTLY as a JSON object matching this schema:
       try {
         const response = await safeGenerateContent(ai, {
           contents: parts,
-          config: { responseMimeType: "application/json" }
+          config: { responseMimeType: "application/json", maxOutputTokens: 1024 }
         });
         const data = parseCleanJson(response.text || "{}");
         providerStats.geminiCount++;
         providerStats.lastUsedProvider["ocr_provider"] = "gemini (gemini-3.6-flash)";
         return res.json({ ...data, _providerUsed: "gemini (gemini-3.6-flash)" });
       } catch (err: any) {
-        console.warn("Vision OCR Gemini call failed, returning fallback:", err.message);
+        console.warn("Vision OCR Gemini fallback failed:", err.message);
       }
     }
 
@@ -1256,7 +1303,11 @@ Return your response STRICTLY as a JSON object matching this schema:
     console.error("Error in /api/analyze-snap:", error);
     res.status(500).json({ error: "Failed to analyze snippet.", details: error.message });
   }
-});
+};
+
+apiRouter.post("/analyze-snap", handleAnalyzeSnap);
+apiRouter.post("/ocr", handleAnalyzeSnap);
+apiRouter.post("/ocr-text", handleAnalyzeSnap);
 
 // API Endpoint 2: Interactive Audio / Text Tutor Query
 apiRouter.post("/tutor-chat", async (req, res) => {

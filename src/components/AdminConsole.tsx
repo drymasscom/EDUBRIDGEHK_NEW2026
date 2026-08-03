@@ -105,15 +105,46 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({ lang }) => {
   const fetchStatus = async () => {
     setLoading(true);
     try {
-      const res = await fetch("/api/admin/provider-status");
-      if (!res.ok) throw new Error("Failed to load provider status");
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+      const res = await fetch("/api/admin/provider-status", { signal: controller.signal });
+      clearTimeout(timeoutId);
+
+      if (!res.ok) throw new Error(`HTTP ${res.status}: Failed to load provider status`);
       const json = await res.json();
       setData(json);
       if (json.lmzhBaseUrl) setLmzhBaseUrlInput(json.lmzhBaseUrl);
       if (json.lmzhModel) setLmzhModelInput(json.lmzhModel);
       setError(null);
     } catch (err: any) {
-      setError(err.message || "Network error fetching provider status");
+      console.warn("fetchStatus error:", err);
+      const errMsg = err.name === "AbortError" ? "Status request timed out (5s). Using local configuration mode." : (err.message || "Network error fetching provider status");
+      setError(errMsg);
+      // Ensure AdminConsole loads with fallback state even if network fails
+      setData((prev) => prev || {
+        providers: {
+          text_generation: "gemini",
+          article_generation: "gemini",
+          tutor_chat: "gemini",
+          group_discussion: "gemini",
+          translation: "gemini",
+          ocr_provider: "gemini",
+        },
+        stats: {
+          todayDate: new Date().toISOString().slice(0, 10),
+          openrouterCount: 0,
+          openrouterLimit: 50,
+          geminiCount: 0,
+          openrouterErrors: 0,
+          lastUsedProvider: {},
+        },
+        openrouterKeyConfigured: true,
+        geminiKeyConfigured: true,
+        lmzhKeyConfigured: true,
+        lmzhBaseUrl: "https://lmzh.top/v1",
+        lmzhModel: "gpt-5-2025-08-07",
+        openrouterModel: "openrouter/free",
+      });
     } finally {
       setLoading(false);
     }

@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from "react";
-import { Navbar } from "./components/Navbar";
+import { Sidebar, TabType } from "./components/Sidebar";
+import { TopHeader } from "./components/TopHeader";
+import { MobileBottomNav } from "./components/MobileBottomNav";
 import { ProductLaunchShowcase } from "./components/ProductLaunchShowcase";
 import { HomeHub } from "./components/HomeHub";
 import { SnapAndLearn } from "./components/SnapAndLearn";
@@ -14,10 +16,8 @@ import { PromoShowcaseModal } from "./components/PromoShowcaseModal";
 import { SubscriptionModal } from "./components/SubscriptionModal";
 import { SnapItem, VocabWord, StudentProfile } from "./types";
 import { SAMPLE_SNAP_ITEMS } from "./data/presetData";
-import { GraduationCap, ArrowLeft, LayoutGrid, Shield, CreditCard, Smartphone, Apple } from "lucide-react";
+import { GraduationCap, LayoutGrid, CreditCard, Shield } from "lucide-react";
 import { Language, translations } from "./utils/i18n";
-
-type TabType = "welcome" | "home" | "snap" | "discussion" | "knowledge" | "investor" | "admin";
 
 export default function App() {
   const [activeTab, setActiveTabState] = useState<TabType>(() => {
@@ -28,6 +28,7 @@ export default function App() {
   });
   const [investorMode, setInvestorMode] = useState<boolean>(true);
   const [isMobileMode, setIsMobileMode] = useState<boolean>(false);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(false);
   const [lang, setLang] = useState<Language>("zh-CN"); // Default to Simplified Chinese per requirement
 
   // Student Profile State & Onboarding Modal Visibility
@@ -202,123 +203,120 @@ export default function App() {
   const t = translations[lang];
 
   return (
-    <div className="min-h-screen bg-[#050505] text-white font-sans selection:bg-[#00FF88] selection:text-black flex flex-col justify-between">
-      {/* Navbar Header */}
-      <Navbar
-        activeTab={activeTab}
-        setActiveTab={setActiveTab}
-        investorMode={investorMode}
-        setInvestorMode={setInvestorMode}
-        isMobileMode={isMobileMode}
-        setIsMobileMode={setIsMobileMode}
-        lang={lang}
-        setLang={setLang}
-        studentProfile={studentProfile}
-        onOpenProfileModal={() => setIsProfileModalOpen(true)}
-        onOpenPromoModal={() => setIsPromoModalOpen(true)}
-        onOpenSubscriptionModal={() => setIsSubscriptionModalOpen(true)}
-      />
+    <div className="min-h-screen bg-[#050505] text-white font-sans selection:bg-[#00FF88] selection:text-black flex flex-row">
+      {/* Responsive Collapsible Left Sidebar (Desktop) */}
+      {!isMobileMode && (
+        <Sidebar
+          activeTab={activeTab}
+          setActiveTab={setActiveTab}
+          isCollapsed={isSidebarCollapsed}
+          setIsCollapsed={setIsSidebarCollapsed}
+          isMobileMode={isMobileMode}
+          setIsMobileMode={setIsMobileMode}
+          lang={lang}
+          setLang={setLang}
+          studentProfile={studentProfile}
+          onOpenProfileModal={() => setIsProfileModalOpen(true)}
+          onOpenPromoModal={() => setIsPromoModalOpen(true)}
+          onOpenSubscriptionModal={() => setIsSubscriptionModalOpen(true)}
+          investorMode={investorMode}
+        />
+      )}
 
-      {/* Main Content Body */}
-      <main className="flex-1">
-        {isMobileMode ? (
-          <MobileStudentView
-            snapItems={snapItems}
-            onAddSnapItem={handleAddSnapItem}
-            onUpdateSnapItem={handleUpdateSnapItem}
-            onAddVocabToActiveItem={handleSaveHighlightVocab}
-            onSwitchToPresentationMode={() => setIsMobileMode(false)}
-            lang={lang}
-            studentProfile={studentProfile}
-            onOpenProfileModal={() => setIsProfileModalOpen(true)}
-            onOpenPromoModal={() => setIsPromoModalOpen(true)}
-            onOpenSubscriptionModal={() => setIsSubscriptionModalOpen(true)}
-          />
-        ) : (
-          <>
-            {/* Top Sticky Breadcrumb Bar for Feature Sub-Pages */}
-            {activeTab !== "home" && activeTab !== "welcome" && (
-              <div className="bg-black/80 border-b border-white/10 sticky top-[65px] sm:top-[73px] z-40 backdrop-blur-md px-3 sm:px-4 py-2.5">
-                <div className="max-w-7xl mx-auto flex items-center justify-between gap-2">
-                  <button
-                    onClick={() => setActiveTab("welcome")}
-                    className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-white/10 hover:bg-[#00FF88] hover:text-black text-white text-xs font-black uppercase tracking-wider border border-white/20 transition-all shadow-md group shrink-0 active:scale-95"
-                  >
-                    <ArrowLeft className="w-4 h-4 text-[#00FF88] group-hover:text-black group-hover:-translate-x-1 transition-transform" />
-                    <span>{t.backToHome}</span>
-                  </button>
+      {/* Main Right Content Area */}
+      <div className="flex-1 flex flex-col min-w-0 min-h-screen justify-between relative">
+        {/* Top Header Bar */}
+        <TopHeader
+          activeTab={activeTab}
+          setActiveTab={setActiveTab}
+          isMobileMode={isMobileMode}
+          setIsMobileMode={setIsMobileMode}
+          lang={lang}
+          setLang={setLang}
+          studentProfile={studentProfile}
+          onOpenProfileModal={() => setIsProfileModalOpen(true)}
+          onOpenPromoModal={() => setIsPromoModalOpen(true)}
+          onOpenSubscriptionModal={() => setIsSubscriptionModalOpen(true)}
+        />
 
-                  <div className="flex items-center gap-1.5 text-xs font-bold text-white/70 uppercase text-right truncate">
-                    <LayoutGrid className="w-4 h-4 text-[#00FF88] shrink-0" />
-                    <span className="hidden sm:inline text-white/50">{lang === "en" ? "Current:" : "當前模組:"}</span>
-                    <span className="text-[#00FF88] font-black truncate">
-                      {activeTab === "snap" && t.tabSnap}
-                      {activeTab === "discussion" && t.tabDiscussion}
-                      {activeTab === "knowledge" && t.tabKnowledge}
-                      {activeTab === "investor" && t.tabInvestor}
-                      {activeTab === "admin" && (lang === "en" ? "AI Admin Console" : "AI 架构与后台控制台")}
-                    </span>
-                  </div>
-                </div>
-              </div>
-            )}
+        {/* Main View Area */}
+        <main className="flex-1 pb-20 md:pb-6">
+          {isMobileMode ? (
+            <MobileStudentView
+              snapItems={snapItems}
+              onAddSnapItem={handleAddSnapItem}
+              onUpdateSnapItem={handleUpdateSnapItem}
+              onAddVocabToActiveItem={handleSaveHighlightVocab}
+              onSwitchToPresentationMode={() => setIsMobileMode(false)}
+              lang={lang}
+              studentProfile={studentProfile}
+              onOpenProfileModal={() => setIsProfileModalOpen(true)}
+              onOpenPromoModal={() => setIsPromoModalOpen(true)}
+              onOpenSubscriptionModal={() => setIsSubscriptionModalOpen(true)}
+            />
+          ) : (
+            <>
+              {activeTab === "welcome" && (
+                <ProductLaunchShowcase
+                  lang={lang}
+                  onEnterApp={(feature) => setActiveTab(feature ? (feature as TabType) : "home")}
+                  onOpenPromoModal={() => setIsPromoModalOpen(true)}
+                />
+              )}
 
-            {activeTab === "welcome" && (
-              <ProductLaunchShowcase
-                lang={lang}
-                onEnterApp={(feature) => setActiveTab(feature ? (feature as TabType) : "home")}
-                onOpenPromoModal={() => setIsPromoModalOpen(true)}
-              />
-            )}
+              {activeTab === "home" && (
+                <HomeHub
+                  lang={lang}
+                  onSelectFeature={(feat) => setActiveTab(feat as TabType)}
+                  investorMode={investorMode}
+                  onOpenPromoModal={() => setIsPromoModalOpen(true)}
+                />
+              )}
 
-            {activeTab === "home" && (
-              <HomeHub
-                lang={lang}
-                onSelectFeature={(feat) => setActiveTab(feat as TabType)}
-                investorMode={investorMode}
-                onOpenPromoModal={() => setIsPromoModalOpen(true)}
-              />
-            )}
+              {activeTab === "snap" && (
+                <SnapAndLearn
+                  snapItems={snapItems}
+                  onAddSnapItem={handleAddSnapItem}
+                  onUpdateSnapItem={handleUpdateSnapItem}
+                  onDeleteSnapItem={handleDeleteSnapItem}
+                  onAddVocabToActiveItem={handleSaveHighlightVocab}
+                  investorMode={investorMode}
+                  lang={lang}
+                />
+              )}
 
-            {activeTab === "snap" && (
-              <SnapAndLearn
-                snapItems={snapItems}
-                onAddSnapItem={handleAddSnapItem}
-                onUpdateSnapItem={handleUpdateSnapItem}
-                onDeleteSnapItem={handleDeleteSnapItem}
-                onAddVocabToActiveItem={handleSaveHighlightVocab}
-                investorMode={investorMode}
-                lang={lang}
-              />
-            )}
+              {activeTab === "discussion" && (
+                <GroupDiscussion investorMode={investorMode} lang={lang} />
+              )}
 
-            {activeTab === "discussion" && (
-              <GroupDiscussion investorMode={investorMode} lang={lang} />
-            )}
+              {activeTab === "knowledge" && (
+                <KnowledgeBase
+                  snapItems={snapItems}
+                  onAddSnapItem={handleAddSnapItem}
+                  onDeleteSnapItem={handleDeleteSnapItem}
+                  onDeleteAllSnapItems={handleDeleteAllSnapItems}
+                  onResetSampleSnapItems={handleResetSampleSnapItems}
+                  onAddVocabToActiveItem={handleSaveHighlightVocab}
+                  investorMode={investorMode}
+                  lang={lang}
+                />
+              )}
 
-            {activeTab === "knowledge" && (
-              <KnowledgeBase
-                snapItems={snapItems}
-                onAddSnapItem={handleAddSnapItem}
-                onDeleteSnapItem={handleDeleteSnapItem}
-                onDeleteAllSnapItems={handleDeleteAllSnapItems}
-                onResetSampleSnapItems={handleResetSampleSnapItems}
-                onAddVocabToActiveItem={handleSaveHighlightVocab}
-                investorMode={investorMode}
-                lang={lang}
-              />
-            )}
+              {activeTab === "investor" && (
+                <InvestorHub investorMode={investorMode} lang={lang} />
+              )}
 
-            {activeTab === "investor" && (
-              <InvestorHub investorMode={investorMode} lang={lang} />
-            )}
+              {activeTab === "admin" && (
+                <AdminConsole lang={lang} />
+              )}
+            </>
+          )}
+        </main>
 
-            {activeTab === "admin" && (
-              <AdminConsole lang={lang} />
-            )}
-          </>
+        {/* Mobile Bottom Navigation Bar (Shown on small screens) */}
+        {!isMobileMode && (
+          <MobileBottomNav activeTab={activeTab} setActiveTab={setActiveTab} lang={lang} />
         )}
-      </main>
 
       {/* Footer / Status Bar */}
       <footer className="border-t border-white/10 bg-[#080808] py-8 px-4 sm:px-6 lg:px-8 text-xs text-white/50 mt-12">
@@ -389,6 +387,7 @@ export default function App() {
           </div>
         </div>
       </footer>
+      </div>
 
       {/* Global AI Selection Highlight Reader & Instant Translator */}
       <HighlightReaderPopover

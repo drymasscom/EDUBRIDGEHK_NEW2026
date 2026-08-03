@@ -109,7 +109,7 @@ export const InteractiveLanding: React.FC<InteractiveLandingProps> = ({
     vocab: {
       title: t.card4Title,
       subtitle: t.card4Desc,
-      videoUrl: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerJoylikes.mp4",
+      videoUrl: "/assets/VIDEO/imagine-17e6da4a-5be3-4a06-a860-61e8382d290c.mp4",
       posterUrl: "https://images.unsplash.com/photo-1456513080510-7bf3a84b82f8?w=800&auto=format&fit=crop&q=80",
       speechText: "All captured passages and vocabulary are stored in your personal Knowledge Base for effortless mobile review.",
       badge: t.card4Badge,
@@ -123,6 +123,15 @@ export const InteractiveLanding: React.FC<InteractiveLandingProps> = ({
   };
 
   const currentVideo = videoDemos[activeTab];
+
+  const handleVideoError = (e: React.SyntheticEvent<HTMLVideoElement, Event>) => {
+    const videoEl = e.currentTarget;
+    const fallback = "/assets/VIDEO/imagine-17e6da4a-5be3-4a06-a860-61e8382d290c.mp4";
+    if (videoEl.src !== window.location.origin + fallback) {
+      videoEl.src = fallback;
+      videoEl.play().catch(() => setIsVideoPlaying(false));
+    }
+  };
 
   return (
     <div className="bg-gradient-to-b from-[#0a0a0c] to-[#050505] border border-white/10 rounded-3xl p-4 sm:p-6 md:p-8 shadow-2xl space-y-6 relative overflow-hidden">
@@ -335,6 +344,7 @@ export const InteractiveLanding: React.FC<InteractiveLandingProps> = ({
             loop
             muted
             playsInline
+            onError={handleVideoError}
             className="w-full h-full object-cover"
           />
 

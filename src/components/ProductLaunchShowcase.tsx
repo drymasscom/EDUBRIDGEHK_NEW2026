@@ -174,14 +174,18 @@ export const ProductLaunchShowcase: React.FC<ProductLaunchShowcaseProps> = ({
   const handleVideoError = () => {
     if (videoSrc !== autoPlayVideoFallback) {
       setVideoSrc(autoPlayVideoFallback);
+    } else {
+      setIsPlaying(false);
     }
   };
 
   const togglePlayPause = () => {
     if (videoRef.current) {
       if (videoRef.current.paused) {
-        videoRef.current.play();
-        setIsPlaying(true);
+        videoRef.current
+          .play()
+          .then(() => setIsPlaying(true))
+          .catch(() => setIsPlaying(false));
       } else {
         videoRef.current.pause();
         setIsPlaying(false);

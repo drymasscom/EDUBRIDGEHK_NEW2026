@@ -45,6 +45,7 @@ import { getRandomDSEVocab } from "../data/dseVocabDatabase";
 import { Three3DFlashcard } from "./Three3DFlashcard";
 import { WordAnalysisModal } from "./WordAnalysisModal";
 import { DSE_SHADOWING_100_POOL, ShadowingItem } from "../data/dseShadowing100";
+import { useSpeech, useOcr, useAudioRecorder } from "../hooks";
 
 interface MobileStudentViewProps {
   snapItems: SnapItem[];
@@ -163,9 +164,9 @@ export const MobileStudentView: React.FC<MobileStudentViewProps> = ({
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // AI Passage Generating & Image Analyzing state
+  // AI Passage Generating & Custom Hooks
+  const { analyzeImage, isAnalyzing: isAnalyzingImage } = useOcr();
   const [isGeneratingAI, setIsGeneratingAI] = useState<boolean>(false);
-  const [isAnalyzingImage, setIsAnalyzingImage] = useState<boolean>(false);
 
   // Shadowing Audio Practice state & Microphone capture
   const [shadowingIndex, setShadowingIndex] = useState<number>(0);
@@ -584,77 +585,13 @@ export const MobileStudentView: React.FC<MobileStudentViewProps> = ({
     const file = e.target.files?.[0];
     if (!file) return;
 
-    setIsAnalyzingImage(true);
     const reader = new FileReader();
     reader.onloadend = async () => {
       const base64Str = reader.result as string;
-
-      try {
-        const res = await fetch("/api/analyze-snap", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            imageBase64: base64Str,
-          }),
-        });
-
-        if (res.ok) {
-          const data = await res.json();
-          const newSnap: SnapItem = {
-            id: `snap-mobile-${Date.now()}`,
-            timestamp: Date.now(),
-            title: data.title || "課本相片 OCR 解析",
-            subjectCategory: data.subjectCategory || "DSE 課本試卷掃描",
-            ocrText: data.ocrText || "Hong Kong secondary EMI schools place high emphasis on academic English vocabulary and reading comprehension.",
-            imageUrl: base64Str,
-            hkdseContext: data.hkdseContext || "香港考評局 DSE 課文解析與重點提示",
-            translation: data.translation || "香港英文中學十分重視學術英語詞彙及 DSE 閱讀理解。",
-            cantoneseGuide: data.cantoneseGuide,
-            vocabulary: (data.vocabulary && data.vocabulary.length > 0)
-              ? data.vocabulary.map((v: any, idx: number) => ({
-                  id: `v-${Date.now()}-${idx}`,
-                  word: v.word,
-                  ipa: v.ipa || "/.../",
-                  level: v.level || "DSE Level 4",
-                  meanZh: v.meanZh || "",
-                  meanEn: v.meanEn || "",
-                  exampleSentence: v.exampleSentence || "",
-                  masteryLevel: "new" as const,
-                }))
-              : getRandomDSEVocab(3, []),
-            grammarNotes: data.grammarNotes || ["Complex Sentence Structure", "DSE Level 5* Academic Phrasing"],
-            speechScript: data.ocrText || "",
-            knowledgeTags: data.knowledgeTags || ["#DSE_PhotoScan", "#Gemini_OCR"],
-            suggestedQuestions: data.suggestedQuestions || ["如何在此相片範文中運用 5** 生詞？"],
-            chatHistory: [],
-          };
-          onAddSnapItem(newSnap);
-          setActiveSnapIndex(0);
-        } else {
-          throw new Error("OCR API failed");
-        }
-      } catch (err) {
-        console.error("OCR error, using local fallback", err);
-        const fallbackSnap: SnapItem = {
-          id: `snap-mobile-${Date.now()}`,
-          timestamp: Date.now(),
-          title: "課本相片解析 (DSE 生詞萃取)",
-          subjectCategory: "DSE English Photo OCR",
-          ocrText: "Hong Kong secondary school students need to master advanced vocabulary and grammar structures for the HKDSE English Language examination.",
-          imageUrl: base64Str,
-          hkdseContext: "考評局 Level 5** 高頻核心考題",
-          translation: "香港中學生需要掌握進階詞彙及語法結構以應對香港中學文憑試 (HKDSE) 英文科考試。",
-          vocabulary: getRandomDSEVocab(3, []),
-          grammarNotes: ["Complex Sentence Structure", "Passive Voice"],
-          speechScript: "Hong Kong secondary school students need to master advanced vocabulary and grammar structures for the HKDSE English Language examination.",
-          knowledgeTags: ["#DSE_PhotoScan", "#Level5**"],
-          suggestedQuestions: ["這篇相片筆記中有哪些 5** 必背字？"],
-          chatHistory: [],
-        };
-        onAddSnapItem(fallbackSnap);
+      const newSnap = await analyzeImage(base64Str, "課本相片解析 (DSE 生詞萃取)");
+      if (newSnap) {
+        onAddSnapItem(newSnap);
         setActiveSnapIndex(0);
-      } finally {
-        setIsAnalyzingImage(false);
       }
     };
     reader.readAsDataURL(file);
@@ -1067,12 +1004,18 @@ export const MobileStudentView: React.FC<MobileStudentViewProps> = ({
                       if (isPlayingUserAudio && userAudioElemRef.current) {
                         userAudioElemRef.current.pause();
                         setIsPlayingUserAudio(false);
-                      } else {
+                      } else if (userRecordedAudioUrl) {
                         const audio = new Audio(userRecordedAudioUrl);
                         userAudioElemRef.current = audio;
-                        audio.play();
-                        setIsPlayingUserAudio(true);
+                        audio
+                          .play()
+                          .then(() => setIsPlayingUserAudio(true))
+                          .catch((e) => {
+                            console.warn("User audio playback failed:", e);
+                            setIsPlayingUserAudio(false);
+                          });
                         audio.onended = () => setIsPlayingUserAudio(false);
+                        audio.onerror = () => setIsPlayingUserAudio(false);
                       }
                     }}
                     className="px-3 py-1.5 bg-purple-600 hover:bg-purple-500 text-white font-bold rounded-xl flex items-center gap-1.5 text-xs active:scale-95 transition-all"
